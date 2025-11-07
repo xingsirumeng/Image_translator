@@ -1,6 +1,5 @@
 原始文本:
 And now, a few words about today's sponsor!
-
 Order Capital is a team of engineers and researchers with a deep passion for algorithms,
 clean code, and well-crafted solutions. Many of their team members have a competitive
 programming background -- with roots in ICPC, IOI, IMO, Code Jam, and Hacker Cup -
@@ -9,14 +8,9 @@ in building high-performance systems for algorithmic trading, where every nanose
 matters.
 
 Here's the founder's welcome post in case you missed it - plus info on current openings.
-
-Order Capital
-
 Considering joining the team or doing an internship? Hit the link and fill out the form -
 they'd love to hear from you!
-
 Prizes & Surprises: 
-
 · 1st-4th - 1000 USDT
 ·5th - 800 USDT
 ·6th - 700 USDT
@@ -25,19 +19,20 @@ Prizes & Surprises:
 ·9th - 300 USDT
 ·10th - 200 USDT
 
+Order Capital
+
 
 翻译结果:
-现在，让我们简单介绍一下今天的赞助商！
-Order Capital 是一支由工程师和研究人员组成的团队，对算法、
-简洁代码和精妙解决方案怀有深厚热忱。团队成员多拥有竞赛编程背景——
-源自ICPC、IOI、IMO、Code Jam及Hacker Cup等赛事——
-因此主办自己的Codeforces轮次对他们而言别具里程碑意义。团队专精于
-构建高频交易系统，其中每纳秒都至关重要。
-这是创始人的欢迎帖，以防你错过——还有当前空缺职位的信息。
-订单资本
-考虑加入团队或实习？点击链接并填写表格——
-他们期待你的消息！
-奖品与惊喜：
+现在，关于今日赞助商的说几句！
+Order Capital 是一支由工程师与研究人员组成的团队，对算法、
+简洁代码与精妙解决方案怀有深厚热忱。他们的多名团队成员拥有竞赛
+编程背景——源自ICPC、IOI、IMO、Code Jam和Hacker Cup等赛事——
+因此主办属于自己的Codeforces轮次对他们而言别具意义的里程碑。他们专注于
+构建适用于高频交易的高性能系统，在这里每一纳秒都至关重要。
+若您错过创始人的欢迎帖，可在此查看——并附当前职位空缺信息。
+考虑加入团队或实习？点击链接填写表格——
+我们期待您的来信！
+奖项与惊喜： 
 · 第1-4名 - 1000 USDT
 · 第5名 - 800 USDT
 · 第6名 - 700 USDT
@@ -45,3 +40,4 @@ Order Capital 是一支由工程师和研究人员组成的团队，对算法、
 · 第8名 - 400 USDT
 · 第9名 - 300 USDT
 · 第10名 - 200 USDT
+订单资金

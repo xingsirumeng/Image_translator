@@ -1,6 +1,8 @@
 # -*- coding: gbk -*-
 from PIL import Image, ImageDraw, ImageFont  # 用于图片文字替换
 from pathlib import Path
+import color_process
+
 
 
 def merge_text_lines(ocr_results, max_line_gap=2, max_x_diff=1):
@@ -92,10 +94,17 @@ def replace_text_in_image(original_path, output_path, paragraphs, translations):
                 'height': height
             }
 
+            # 检测文字区域的背景颜色
+            bg_color = color_process.get_text_background_color(img, merged_location)
+            # bg_color = "white"
+            # 检测文字颜色（使用第一个文字块的颜色作为参考）
+            text_color = color_process.get_text_color(img, para[0]['location'])
+            # text_color = "black"
+
             # 绘制背景覆盖原始文本
             draw.rectangle(
                 [(left, top), (right, bottom)],
-                fill="white"
+                fill=bg_color
             )
 
             # 绘制翻译后的文本
@@ -116,7 +125,7 @@ def replace_text_in_image(original_path, output_path, paragraphs, translations):
             x = merged_location["left"]
             y = merged_location["top"]
 
-            draw.text((x, y), text, fill="black", font=font)
+            draw.text((x, y), text, fill=text_color, font=font)
 
         # 保存结果
         img.save(output_path)
