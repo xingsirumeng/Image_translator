@@ -4,7 +4,6 @@ from pathlib import Path
 import color_process
 
 
-
 def merge_text_lines(ocr_results, max_line_gap=2, max_x_diff=1):
     # 基于位置信息合并属于同一句子的文本行
     # :param ocr_results: OCR识别结果列表
@@ -98,7 +97,7 @@ def replace_text_in_image(original_path, output_path, paragraphs, translations):
             bg_color = color_process.get_text_background_color(img, merged_location)
             # bg_color = "white"
             # 检测文字颜色（使用第一个文字块的颜色作为参考）
-            text_color = color_process.get_text_color(img, para[0]['location'])
+            text_color = color_process.get_text_color(img, para[0]['location'], bg_color)
             # text_color = "black"
 
             # 绘制背景覆盖原始文本

@@ -200,7 +200,7 @@ def main():
 
         # 图片文字替换
         print("\n正在替换图片文字...")
-        output_path = Path(image_path).stem + "_translated.jpg"
+        output_path = "./result/" + Path(image_path).stem + "_translated.jpg"
         success = text_process.replace_text_in_image(image_path, output_path, original_paragraphs, translations)
 
         if success:
@@ -209,7 +209,7 @@ def main():
             print("\n图片处理失败，仅保存文本翻译结果")
 
         # 保存文本结果
-        text_output_path = Path(image_path).stem + "_translation.txt"
+        text_output_path = "./result/" + Path(image_path).stem + "_translation.txt"
         with open(text_output_path, "w", encoding="utf-8") as f:
             f.write("原始文本:\n")
             f.write("\n".join([para['words'] for para in original_paragraphs]))

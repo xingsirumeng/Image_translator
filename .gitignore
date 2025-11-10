@@ -42,6 +42,7 @@ dist/
 htmlcov/
 .pytest_cache/
 test_results.xml
+src/result/*
 
 # 日志文件
 *.log

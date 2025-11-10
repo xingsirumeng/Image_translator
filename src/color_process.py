@@ -73,7 +73,7 @@ def get_text_background_color(image, location):
         return (255, 255, 255)  # 默认白色
 
 
-def get_text_color(image, location, bg_color=None, color_threshold=30):
+def get_text_color(image, location, bg_color=None, color_threshold=100):
     """
     检测文字颜色（基于背景颜色对比）
     :param image: PIL Image对象
@@ -113,7 +113,8 @@ def get_text_color(image, location, bg_color=None, color_threshold=30):
         # 计算颜色差异函数
         def color_distance(color1, color2):
             """计算两个颜色之间的欧氏距离"""
-            return np.linalg.norm(np.array(color1) - np.array(color2))
+            diff = np.array(color1, dtype=np.int32) - np.array(color2, dtype=np.int32)
+            return np.sqrt(np.sum(diff ** 2))
 
         # 收集与背景颜色明显不同的像素
         text_pixels = []
@@ -136,9 +137,8 @@ def get_text_color(image, location, bg_color=None, color_threshold=30):
         text_color = tuple(map(int, median_color))
 
         # 最终验证
-        if color_distance(text_color, bg_color) < 10:  # 如果颜色太接近背景
+        if color_distance(text_color, bg_color) < color_threshold:  # 如果颜色太接近背景
             return get_contrasting_color(bg_color)  # 使用对比色
-
         return text_color
 
     except Exception as e:
