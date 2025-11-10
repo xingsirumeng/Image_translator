@@ -43,6 +43,7 @@ htmlcov/
 .pytest_cache/
 test_results.xml
 src/result/*
+!src/result/.gitkeep
 
 # 日志文件
 *.log
