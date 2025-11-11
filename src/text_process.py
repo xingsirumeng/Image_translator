@@ -4,7 +4,7 @@ from pathlib import Path
 import color_process
 
 
-def merge_text_lines(ocr_results, max_line_gap=2, max_x_diff=1):
+def merge_text_lines(ocr_results, max_line_gap=1, max_x_diff=0.1):
     # 基于位置信息合并属于同一句子的文本行
     # :param ocr_results: OCR识别结果列表
     # :param max_line_gap: 最大行间距（相对于行高的比例）
@@ -30,7 +30,7 @@ def merge_text_lines(ocr_results, max_line_gap=2, max_x_diff=1):
             last_left = para['res'][-1]['location']['left']
             last_mid = (last_left * 2 + para['res'][-1]['location']['width']) / 2
             mid = (left * 2 + width) / 2
-            if (top - last_bottom) <= height * max_line_gap and (abs(left - last_left) <= max_x_diff or abs(mid - last_mid) <= max_x_diff * width):
+            if top > last_bottom and (top - last_bottom) <= height * max_line_gap and (abs(left - last_left) <= max_x_diff * width or abs(mid - last_mid) <= max_x_diff * width):
                 para['res'].append(res)
                 flag = False
                 break
@@ -108,7 +108,7 @@ def replace_text_in_image(original_path, output_path, paragraphs, translations):
 
             # 绘制翻译后的文本
             text = translations[i]
-            font_size = max(10, int(para[0]['location']['height'] * 0.8))
+            font_size = para[0]['location']['height']
 
             # 更新字体大小
             if hasattr(font, "path"):  # 如果是truetype字体

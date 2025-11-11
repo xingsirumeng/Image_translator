@@ -7,6 +7,8 @@ import requests
 from pathlib import Path
 from dotenv import dotenv_values
 import text_process
+import concurrent.futures
+import threading
 
 
 def get_project_root():
@@ -143,6 +145,27 @@ def deepseek_translate(text, api_key, target_lang="中文"):
         raise Exception(f"翻译处理错误: {str(e)}")
 
 
+def parallel_translate(paragraphs, api_key, target_lang, max_workers=3):
+    """并行翻译多个段落（保持原始顺序）"""
+
+    def translate_single(para):
+        """单个段落的翻译任务"""
+        try:
+            result = deepseek_translate(para['words'], api_key, target_lang)
+            return result
+        except Exception as e:
+            error_msg = f"翻译失败: {str(e)}"
+            return error_msg
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # 方法1: 使用map（最简单，保持顺序）
+        translations = list(executor.map(
+            lambda para: translate_single(para),
+            paragraphs
+        ))
+    return translations
+
+
 def main():
 
     try:
@@ -177,16 +200,16 @@ def main():
         # 翻译所有文本
         print("\n正在翻译文本...")
         start_time = time.time()
-        translations = []
-        for paragraph in original_paragraphs:
-            # 翻译整个段落（保持上下文）
-            trans_paragraph = deepseek_translate(
-                paragraph['words'],
-                config["DEEPSEEK_API_KEY"],
-                target_lang
-            )
-            translations.append(trans_paragraph)
-            time.sleep(0.3)  # 避免API速率限制
+
+        # 并行线程数
+        max_workers = min(5, len(original_paragraphs))
+
+        translations = parallel_translate(
+            original_paragraphs,
+            config["DEEPSEEK_API_KEY"],
+            target_lang,
+            max_workers
+        )
 
         elapsed = time.time() - start_time
         print(f"\n翻译完成 ({elapsed:.2f}秒)")

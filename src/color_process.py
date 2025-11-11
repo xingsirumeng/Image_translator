@@ -36,7 +36,7 @@ def get_text_background_color(image, location):
         background_samples = []
 
         # 采样边缘像素
-        sample_margin = 2
+        sample_margin = 0
         sample_points = [
             # 上边缘
             (left + sample_margin, top + sample_margin),
@@ -53,14 +53,8 @@ def get_text_background_color(image, location):
         ]
 
         for x, y in sample_points:
-            if 0 <= x < image.width and 0 <= y < image.height:
-                pixel = img_array[y, x]
-                background_samples.append(tuple(pixel[:3]))  # 取RGB通道
-
-        # 如果没有采样到点，使用整个区域的平均值
-        if not background_samples:
-            avg_color = np.mean(text_region, axis=(0, 1))
-            return tuple(int(c) for c in avg_color[:3])
+            pixel = img_array[y, x]
+            background_samples.append(tuple(pixel[:3]))  # 取RGB通道
 
         # 取所有采样点的中位数
         background_samples = np.array(background_samples)
