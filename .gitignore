@@ -55,3 +55,6 @@ Thumbs.db
 
 # 文档生成
 docs/_build/
+
+# 模型文件
+models

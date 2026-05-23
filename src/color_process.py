@@ -167,4 +167,3 @@ def get_contrasting_color(bg_color):
         return (0, 0, 0)  # 黑色
     else:
         return (255, 255, 255)  # 白色
-

@@ -3,3 +3,5 @@ requests>=2.31.0
 python-dotenv>=1.0.0 
 pillow~=11.3.0
 dotenv~=0.9.9
+PySide6~=6.10.1
+numpy~=2.3.4
