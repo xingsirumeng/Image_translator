@@ -2,7 +2,6 @@
 from PIL import Image, ImageDraw, ImageFont  # 用于图片文字替换
 from pathlib import Path
 import color_process
-import image_inpainting
 
 
 def merge_text_lines(ocr_results, max_line_gap=1, max_x_diff=0.1):
@@ -103,7 +102,6 @@ def merge_text_lines(ocr_results, max_line_gap=1, max_x_diff=0.1):
 
 
 def replace_text_in_image(img, output_path, paragraphs, translations):
-    img = image_inpainting.image_inpainting(img, paragraphs)
     # 在图片上替换文字
     try:
         # 打开原始图片
@@ -154,6 +152,7 @@ def replace_text_in_image(img, output_path, paragraphs, translations):
             # 检测文字颜色（使用第一个文字块的颜色作为参考）
             text_color = color_process.get_text_color(img, para[0]['location'], bg_color)
             # text_color = "black"
+            bg_color, text_color = color_process.detect_bg_and_text_color_kmeans(img, merged_location)
 
             # 绘制背景覆盖原始文本
             draw.rectangle(

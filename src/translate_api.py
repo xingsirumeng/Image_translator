@@ -2,6 +2,7 @@ import base64
 import concurrent.futures
 import shutil
 import sys
+import os
 import time
 from pathlib import Path
 
@@ -133,7 +134,7 @@ def deepseek_translate(text, api_key, target_lang="中文"):
     }
 
     prompt = (
-        f"请将以下内容准确翻译成{target_lang}，严格保持原始格式：\n\n"
+        f"请将以下非{target_lang}内容准确翻译成{target_lang}，严格保持原始格式：\n\n"
         f"文本内容：\n\n{text}\n\n"
         "翻译要求：\n"
         "1. 仅返回翻译结果，不要添加任何额外说明（包括引导句）\n"

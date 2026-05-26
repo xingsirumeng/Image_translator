@@ -1,6 +1,140 @@
 import numpy as np
 
 
+
+import numpy as np
+
+
+def detect_bg_and_text_color_kmeans(
+    image,
+    location,
+    k=3,
+    sample_size=6000,
+    max_iter=30,
+    n_init=3,
+    distance_threshold=40.0,
+    seed=0,
+):
+    """
+    用K-means在ROI里聚类，估计背景色和文字色。
+
+    参数:
+      image: PIL Image
+      location: dict {left, top, width, height}
+      k: 聚类数。常用 2~4。背景+文字+抗锯齿/阴影 => 3 比较合适
+      sample_size: 从ROI随机采样的像素数（太大慢，太小不稳）
+      max_iter: k-means迭代上限
+      n_init: 不同随机初始化次数，取最好的一次
+      distance_threshold: 文字色与背景色最小距离阈值（太小容易把抗锯齿当文字/背景混掉）
+      seed: 随机种子
+
+    返回:
+      (bg_color, text_color): 都是 (R,G,B) int 元组
+    """
+    # ---------- 1) 裁剪ROI ----------
+    img = np.array(image)
+    h, w = img.shape[0], img.shape[1]
+
+    left = max(0, int(location["left"]))
+    top = max(0, int(location["top"]))
+    width = int(location["width"])
+    height = int(location["height"])
+
+    right = min(w, left + max(0, width))
+    bottom = min(h, top + max(0, height))
+
+    if right <= left or bottom <= top:
+        return (255, 255, 255), (0, 0, 0)
+
+    roi = img[top:bottom, left:right]
+    if roi.size == 0:
+        return (255, 255, 255), (0, 0, 0)
+
+    # 只取RGB（如果是RGBA也OK）
+    roi_rgb = roi[..., :3].reshape(-1, 3).astype(np.float32)
+    n_pixels = roi_rgb.shape[0]
+    if n_pixels == 0:
+        return (255, 255, 255), (0, 0, 0)
+
+    # ---------- 2) 随机采样减少计算量 ----------
+    rng = np.random.default_rng(seed)
+    if sample_size is not None and n_pixels > sample_size:
+        idx = rng.choice(n_pixels, size=sample_size, replace=False)
+        X = roi_rgb[idx]
+    else:
+        X = roi_rgb
+
+    # ---------- 3) 轻量K-means实现 ----------
+    def kmeans_once(X, k, max_iter, rng):
+        # 随机选k个点做初始化中心（你也可以换成k-means++，这里先简单）
+        centers = X[rng.choice(X.shape[0], size=k, replace=False)].copy()
+
+        for _ in range(max_iter):
+            # 计算距离并分配簇
+            # distances: [N, k]
+            distances = ((X[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2)
+            labels = distances.argmin(axis=1)
+
+            new_centers = centers.copy()
+            for j in range(k):
+                mask = labels == j
+                if mask.any():
+                    new_centers[j] = X[mask].mean(axis=0)
+                else:
+                    # 空簇：重新随机一个点
+                    new_centers[j] = X[rng.integers(0, X.shape[0])]
+
+            # 收敛判断
+            if np.allclose(new_centers, centers, atol=1e-3):
+                centers = new_centers
+                break
+            centers = new_centers
+
+        # inertia（越小越好）
+        inertia = ((X - centers[labels]) ** 2).sum()
+        return centers, labels, inertia
+
+    best = None
+    for i in range(max(1, n_init)):
+        centers, labels, inertia = kmeans_once(X, k, max_iter, rng)
+        if best is None or inertia < best[2]:
+            best = (centers, labels, inertia)
+
+    centers, labels, _ = best
+
+    # ---------- 4) 选背景簇：像素占比最大 ----------
+    counts = np.bincount(labels, minlength=k).astype(np.float32)
+    probs = counts / max(1.0, counts.sum())
+    bg_idx = int(np.argmax(probs))
+    bg = centers[bg_idx]
+
+    # ---------- 5) 选文字簇：与背景距离最大（且最好不是很小的噪声簇） ----------
+    def euclid(a, b):
+        d = a - b
+        return float(np.sqrt(np.dot(d, d)))
+
+    # 候选：除背景外的簇，按“与背景距离”降序
+    candidates = []
+    for j in range(k):
+        if j == bg_idx:
+            continue
+        dist = euclid(centers[j], bg)
+        candidates.append((dist, probs[j], j))
+    candidates.sort(reverse=True)  # dist优先
+
+    # 默认取距离最大的；但如果它占比太小且距离也不够，可以退化为对比色
+    text_idx = candidates[0][2] if candidates else bg_idx
+    text = centers[text_idx]
+    if euclid(text, bg) < distance_threshold:
+        # 退化：用对比色（黑/白）
+        brightness = (bg[0] * 299 + bg[1] * 587 + bg[2] * 114) / 1000.0
+        text = np.array([0, 0, 0], dtype=np.float32) if brightness > 128 else np.array([255, 255, 255], dtype=np.float32)
+
+    bg_color = tuple(int(np.clip(c, 0, 255)) for c in bg)
+    text_color = tuple(int(np.clip(c, 0, 255)) for c in text)
+    return bg_color, text_color
+
+
 def get_text_background_color(image, location):
     """
     检测文字区域的背景颜色
