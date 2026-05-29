@@ -58,3 +58,11 @@ docs/_build/
 
 # 模型文件
 models
+
+
+output/*
+!output/.gitkeep
+
+
+core/output/*
+core/!output/.gitkeep

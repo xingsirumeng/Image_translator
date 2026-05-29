@@ -1,5 +1,6 @@
 import base64
 import concurrent.futures
+import logging
 import shutil
 import sys
 import os
@@ -10,7 +11,17 @@ import requests
 from PIL import Image
 from dotenv import dotenv_values
 
-import text_process
+from core import text_process
+
+logger = logging.getLogger(__name__)
+
+IMAGE_PROGRESS_STAGES = (
+    (1, "OCR识别文字"),
+    (2, "合并段落"),
+    (3, "翻译段落"),
+    (4, "覆盖文字"),
+)
+IMAGE_STAGE_COUNT = len(IMAGE_PROGRESS_STAGES)
 
 
 def get_runtime_dir():
@@ -29,7 +40,7 @@ def get_config_path():
 
 def get_result_dir():
     """返回结果输出目录。"""
-    return get_runtime_dir() / "result"
+    return get_runtime_dir() / "output"
 
 
 def load_config():
@@ -37,8 +48,10 @@ def load_config():
     env_file = get_config_path()
 
     if env_file.exists():
+        logger.info("加载配置文件: %s", env_file)
         return dotenv_values(env_file)
 
+    logger.warning("未找到配置文件，将创建: %s", env_file)
     print(f"未找到环境文件，将在本地创建: {env_file}")
     print("\n请提供以下 API 密钥（输入后将保存到本地文件）:")
 
@@ -68,6 +81,7 @@ def validate_config(config):
     required_keys = ["baidu_api_key", "baidu_secret_key", "deepseek_api_key"]
     missing = [key for key in required_keys if not config.get(key)]
     if missing:
+        logger.error("配置校验失败，缺少字段: %s", ", ".join(missing))
         raise ValueError(f"缺少必要配置: {', '.join(missing)}")
 
 
@@ -79,6 +93,7 @@ def get_baidu_ocr_token(api_key, secret_key):
     )
 
     try:
+        logger.debug("开始请求 OCR 令牌")
         response = requests.post(url, timeout=30)
         response.raise_for_status()
         result = response.json()
@@ -90,12 +105,14 @@ def get_baidu_ocr_token(api_key, secret_key):
         error_msg = result.get("error_description") or result.get("error_msg") or "未知错误"
         raise RuntimeError(f"获取 OCR 令牌失败: {error_msg}")
 
+    logger.debug("OCR 令牌请求成功")
     return access_token
 
 
 def baidu_ocr_with_location(image_path, access_token):
     """获取带位置信息的 OCR 结果。"""
     try:
+        logger.info("开始 OCR 识别: %s", Path(image_path).name)
         with open(image_path, "rb") as file:
             img_base64 = base64.b64encode(file.read()).decode()
 
@@ -104,7 +121,7 @@ def baidu_ocr_with_location(image_path, access_token):
         data = {
             "image": img_base64,
             "recognize_granularity": "big",
-            "paragraph": "true"
+            "language_type": "auto_detect"
         }
 
         response = requests.post(url, headers=headers, data=data, timeout=60)
@@ -115,6 +132,7 @@ def baidu_ocr_with_location(image_path, access_token):
             error_code = result.get("error_code", "未知")
             raise RuntimeError(f"OCR 识别失败: {error_msg} (错误码: {error_code})")
 
+        logger.info("OCR 识别完成: %s, region_count=%s", Path(image_path).name, len(result["words_result"]))
         return result["words_result"]
 
     except FileNotFoundError as exc:
@@ -134,11 +152,10 @@ def deepseek_translate(text, api_key, target_lang="中文"):
     }
 
     prompt = (
-        f"请将以下非{target_lang}内容准确翻译成{target_lang}，严格保持原始格式：\n\n"
+        f"请将以下非{target_lang}内容准确翻译成{target_lang}\n\n"
         f"文本内容：\n\n{text}\n\n"
         "翻译要求：\n"
-        "1. 仅返回翻译结果，不要添加任何额外说明（包括引导句）\n"
-        "2. 保留所有换行符、空格和标点\n"
+        "1. 仅返回翻译结果\n"
     )
 
     payload = {
@@ -149,6 +166,7 @@ def deepseek_translate(text, api_key, target_lang="中文"):
     }
 
     try:
+        logger.debug("开始翻译请求，target_lang=%s, text_length=%s", target_lang, len(text))
         response = requests.post(url, headers=headers, json=payload, timeout=60)
     except requests.exceptions.Timeout as exc:
         raise RuntimeError("翻译请求超时，请重试") from exc
@@ -173,6 +191,7 @@ def deepseek_translate(text, api_key, target_lang="中文"):
         error_code = error.get("code", "未知")
         raise RuntimeError(f"翻译失败 [{error_code}]: {error_msg}")
 
+    logger.debug("翻译请求完成，target_lang=%s, translated_length=%s", target_lang, len(result["choices"][0]["message"]["content"]))
     return result["choices"][0]["message"]["content"].strip()
 
 
@@ -180,9 +199,11 @@ def parallel_translate(paragraphs, api_key, target_lang, max_workers=3):
     """并行翻译多个段落，并保持原始顺序。"""
 
     if not paragraphs:
+        logger.info("没有可翻译段落")
         return []
 
     max_workers = max(1, min(max_workers, len(paragraphs)))
+    logger.info("开始并行翻译，段落数=%s, worker数=%s", len(paragraphs), max_workers)
 
     def translate_single(paragraph):
         try:
@@ -191,7 +212,9 @@ def parallel_translate(paragraphs, api_key, target_lang, max_workers=3):
             raise RuntimeError(f"段落翻译失败: {exc}") from exc
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        return list(executor.map(translate_single, paragraphs))
+        translations = list(executor.map(translate_single, paragraphs))
+        logger.info("并行翻译完成，段落数=%s", len(translations))
+        return translations
 
 
 def build_output_paths(image_path, output_dir=None, output_base_name=None):
@@ -206,7 +229,18 @@ def build_output_paths(image_path, output_dir=None, output_base_name=None):
     return image_output_path, text_output_path
 
 
-def process_image_task(image_path, config, output_dir=None, output_base_name=None):
+def report_image_progress(progress_callback, stage_index, stage_name):
+    """通知外层当前图片的阶段进度。"""
+    if not progress_callback:
+        return
+
+    try:
+        progress_callback(stage_index, stage_name)
+    except Exception:
+        logger.exception("图片阶段进度回调失败: stage=%s %s", stage_index, stage_name)
+
+
+def process_image_task(image_path, config, output_dir=None, output_base_name=None, progress_callback=None):
     """处理单张图片。适合在子进程中直接调用。"""
     started_at = time.time()
     image_path = str(Path(image_path))
@@ -224,8 +258,10 @@ def process_image_task(image_path, config, output_dir=None, output_base_name=Non
     }
 
     try:
+        logger.info("开始处理图片任务: %s", image_path)
         config = dict(config or load_config())
         validate_config(config)
+        translations = []
 
         target_lang = config.get("translate_language") or "中文"
         output_path, text_output_path = build_output_paths(
@@ -233,17 +269,28 @@ def process_image_task(image_path, config, output_dir=None, output_base_name=Non
             output_dir=output_dir,
             output_base_name=output_base_name,
         )
+        logger.debug("输出路径已生成: image=%s, text=%s", output_path, text_output_path)
 
         baidu_token = get_baidu_ocr_token(
             config["baidu_api_key"],
             config["baidu_secret_key"],
         )
         ocr_results = baidu_ocr_with_location(image_path, baidu_token)
+        report_image_progress(progress_callback, 1, "OCR识别文字")
+
         original_paragraphs = text_process.merge_text_lines(ocr_results)
+        report_image_progress(progress_callback, 2, "合并段落")
+
         image = Image.open(image_path).convert("RGB")
 
         result["ocr_region_count"] = len(ocr_results)
         result["paragraph_count"] = len(original_paragraphs)
+        logger.info(
+            "图片预处理完成: %s, ocr_regions=%s, paragraphs=%s",
+            Path(image_path).name,
+            len(ocr_results),
+            len(original_paragraphs),
+        )
 
         if original_paragraphs:
             translations = parallel_translate(
@@ -252,6 +299,7 @@ def process_image_task(image_path, config, output_dir=None, output_base_name=Non
                 target_lang,
                 max_workers=min(5, len(original_paragraphs)),
             )
+            report_image_progress(progress_callback, 3, "翻译段落")
 
             success = text_process.replace_text_in_image(
                 image,
@@ -261,11 +309,15 @@ def process_image_task(image_path, config, output_dir=None, output_base_name=Non
             )
             if not success:
                 raise RuntimeError("图片文字替换失败")
+            report_image_progress(progress_callback, 4, "覆盖文字")
 
             result["message"] = f"识别到 {len(original_paragraphs)} 个文本段落并完成翻译"
         else:
+            report_image_progress(progress_callback, 3, "翻译段落（无可翻译文本）")
             shutil.copy2(image_path, output_path)
+            report_image_progress(progress_callback, 4, "覆盖文字（已复制原图）")
             result["message"] = "未识别到可翻译文本，已复制原图"
+            logger.info("未识别到可翻译文本，已复制原图: %s", image_path)
 
         with open(text_output_path, "w", encoding="utf-8") as file:
             file.write("原始文本:\n")
@@ -278,9 +330,16 @@ def process_image_task(image_path, config, output_dir=None, output_base_name=Non
             output_path=str(output_path),
             text_output_path=str(text_output_path),
         )
+        logger.info(
+            "图片任务处理成功: %s, elapsed=%ss, output=%s",
+            image_path,
+            round(time.time() - started_at, 2),
+            output_path,
+        )
 
     except Exception as exc:
         result["error"] = str(exc)
+        logger.exception("图片任务处理失败: %s", image_path)
 
     result["elapsed_seconds"] = round(time.time() - started_at, 2)
     return result

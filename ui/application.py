@@ -1,8 +1,7 @@
 import os
 import sys
+import logging
 from pathlib import Path
-
-import translate_api
 from dotenv import dotenv_values
 from PySide6.QtCore import QSettings, QThread, Signal
 from PySide6.QtWidgets import (
@@ -22,7 +21,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core import translate_api
+
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+logger = logging.getLogger(__name__)
 
 
 class ConfigManager:
@@ -37,8 +39,10 @@ class ConfigManager:
         """加载配置"""
         if self.config_path.exists():
             self.config = dict(dotenv_values(self.config_path))
+            logger.info("已加载配置文件: %s", self.config_path)
         else:
             self.config = self._get_default_config()
+            logger.warning("配置文件不存在，使用默认配置: %s", self.config_path)
 
     def _get_default_config(self):
         """获取默认配置"""
@@ -60,6 +64,8 @@ class ConfigManager:
             file.write("# API密钥配置 请勿分享此文件!\n")
             for key, value in self.config.items():
                 file.write(f"{key}={value}\n")
+
+        logger.info("已保存配置文件: %s", self.config_path)
 
     def get(self, key, default=None):
         """获取配置值"""
@@ -98,6 +104,7 @@ def build_batch_payloads(image_paths, config):
             }
         )
 
+    logger.debug("已构建批量任务载荷，数量=%s", len(payloads))
     return payloads
 
 
@@ -107,6 +114,7 @@ class BatchTranslationWorker(QThread):
     finished = Signal(list)
     error = Signal(str)
     progress = Signal(str)
+    overall_progress = Signal(int, int, str)
     item_finished = Signal(dict)
 
     def __init__(self, image_paths, config_manager):
@@ -119,6 +127,7 @@ class BatchTranslationWorker(QThread):
     def request_cancel(self):
         """请求取消执行"""
         self._cancel_requested = True
+        logger.warning("收到批量任务取消请求")
 
     def run(self):
         """执行批量任务"""
@@ -129,20 +138,36 @@ class BatchTranslationWorker(QThread):
 
             total = len(payloads)
             if total == 0:
+                logger.info("批量任务没有可处理图片")
                 self.finished.emit([])
                 return
 
+            logger.info("批量任务开始，图片数量=%s", total)
             self.progress.emit(f"开始批量处理，共 {total} 张图片，按顺序逐张处理")
+            self.overall_progress.emit(0, total * translate_api.IMAGE_STAGE_COUNT, "准备开始")
 
             completed = 0
-            for payload in payloads:
+            for index, payload in enumerate(payloads):
                 if self._cancel_requested:
+                    logger.warning("批量任务在处理前被取消，已完成=%s/%s", completed, total)
                     break
 
                 image_path = payload["image_path"]
+                logger.info("开始处理图片 %s (%s/%s)", Path(image_path).name, completed + 1, total)
                 try:
-                    result = run_single_image_task(payload)
+                    def stage_callback(stage_index, stage_name):
+                        overall = index * translate_api.IMAGE_STAGE_COUNT + stage_index
+                        self.overall_progress.emit(
+                            overall,
+                            total * translate_api.IMAGE_STAGE_COUNT,
+                            f"{Path(image_path).name} - {stage_name}",
+                        )
+
+                    task_payload = dict(payload)
+                    task_payload["progress_callback"] = stage_callback
+                    result = run_single_image_task(task_payload)
                 except Exception as exc:
+                    logger.exception("处理图片时出现未捕获异常: %s", image_path)
                     result = {
                         "image_path": image_path,
                         "success": False,
@@ -159,13 +184,22 @@ class BatchTranslationWorker(QThread):
                 completed += 1
                 self.item_finished.emit(result)
                 self.progress.emit(f"已完成 {completed}/{total}: {Path(image_path).name}")
+                self.overall_progress.emit(
+                    completed * translate_api.IMAGE_STAGE_COUNT,
+                    total * translate_api.IMAGE_STAGE_COUNT,
+                    f"已完成 {Path(image_path).name}",
+                )
 
             if self._cancel_requested:
                 self.progress.emit("批量处理已取消")
+                logger.warning("批量任务已取消，完成=%s/%s", completed, total)
+            else:
+                logger.info("批量任务完成，成功提交结果数量=%s", len(self._results))
 
             self.finished.emit(self._results)
 
         except Exception as exc:
+            logger.exception("批量任务执行失败")
             self.error.emit(str(exc))
 
 
@@ -225,6 +259,7 @@ class MainWindow(QMainWindow):
 
         self.init_ui()
         self.update_current_display()
+        logger.info("主窗口初始化完成")
 
     def init_ui(self):
         """初始化界面"""
@@ -260,6 +295,7 @@ class MainWindow(QMainWindow):
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
+        self.progress_bar.setTextVisible(True)
         layout.addWidget(self.progress_bar)
 
         layout.addWidget(QLabel("📝 操作日志:"))
@@ -299,6 +335,7 @@ class MainWindow(QMainWindow):
 
     def open_settings(self):
         """打开设置对话框"""
+        logger.info("打开设置对话框")
         dialog = SettingsDialog(self.config_manager, self)
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -307,6 +344,7 @@ class MainWindow(QMainWindow):
             self.update_current_display()
             self.result_display.append("✅ 设置已保存")
             self.statusBar().showMessage("设置已保存", 2000)
+            logger.info("设置已更新")
 
     def load_images(self):
         """加载多个图片文件"""
@@ -320,6 +358,7 @@ class MainWindow(QMainWindow):
         )
 
         if not file_paths:
+            logger.info("用户取消了图片选择")
             return
 
         valid_files = []
@@ -338,12 +377,18 @@ class MainWindow(QMainWindow):
             valid_files.append(file_path)
 
         if not valid_files:
+            logger.warning("选择的图片均无效，数量=%s", len(file_paths))
             QMessageBox.warning(self, "错误", "没有可处理的图片文件")
             return
 
         self.image_paths = valid_files
         self.settings.setValue("last_image_path", os.path.dirname(valid_files[0]))
         self.update_selection_display()
+        logger.info(
+            "已加载图片，有效=%s，无效=%s",
+            len(valid_files),
+            len(invalid_messages),
+        )
 
         self.result_display.append(f"✅ 已加载 {len(valid_files)} 张图片")
         for file_path in valid_files[:5]:
@@ -360,6 +405,7 @@ class MainWindow(QMainWindow):
     def process_images(self):
         """批量处理图片"""
         if not self.image_paths:
+            logger.warning("未选择图片时尝试开始处理")
             QMessageBox.warning(self, "警告", "请先加载图片")
             return
 
@@ -370,6 +416,7 @@ class MainWindow(QMainWindow):
                 self.config_manager.get("deepseek_api_key"),
             ]
         ):
+            logger.warning("配置不完整，阻止开始处理")
             reply = QMessageBox.question(
                 self,
                 "配置不完整",
@@ -385,20 +432,33 @@ class MainWindow(QMainWindow):
         self.settings_btn.setEnabled(False)
 
         self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setRange(0, len(self.image_paths) * translate_api.IMAGE_STAGE_COUNT)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("%p%")
         self.result_display.append(f"⏳ 开始批量处理 {len(self.image_paths)} 张图片...")
         self.statusBar().showMessage("批处理中...")
+        logger.info("UI 已发起批量处理，图片数量=%s", len(self.image_paths))
 
         self.worker = BatchTranslationWorker(self.image_paths, self.config_manager)
         self.worker.progress.connect(self.on_progress)
+        self.worker.overall_progress.connect(self.on_overall_progress)
         self.worker.item_finished.connect(self.on_item_finished)
         self.worker.finished.connect(self.on_finished)
         self.worker.error.connect(self.on_error)
         self.worker.start()
 
+    def on_overall_progress(self, current, total, message):
+        """更新确定进度条。"""
+        self.progress_bar.setRange(0, total)
+        self.progress_bar.setValue(current)
+        self.progress_bar.setFormat(f"%p% ({current}/{total})")
+        self.statusBar().showMessage(message)
+        logger.info("总体进度: %s/%s %s", current, total, message)
+
     def on_progress(self, message):
         """处理进度更新"""
         self.result_display.append(f"📌 {message}")
+        logger.info("进度更新: %s", message)
 
     def on_item_finished(self, result):
         """处理单个图片完成事件"""
@@ -407,8 +467,15 @@ class MainWindow(QMainWindow):
             self.result_display.append(
                 f"✅ {image_name} 处理完成，用时 {result['elapsed_seconds']} 秒，输出: {result['output_path']}"
             )
+            logger.info(
+                "单张图片处理完成: %s, output=%s, elapsed=%ss",
+                image_name,
+                result["output_path"],
+                result["elapsed_seconds"],
+            )
         else:
             self.result_display.append(f"❌ {image_name} 处理失败: {result['error']}")
+            logger.error("单张图片处理失败: %s, error=%s", image_name, result["error"])
 
     def on_finished(self, results):
         """处理全部完成"""
@@ -420,6 +487,7 @@ class MainWindow(QMainWindow):
             f"🏁 批量处理完成: 成功 {success_count} 张，失败 {fail_count} 张"
         )
         self.statusBar().showMessage("批量处理完成", 3000)
+        logger.info("批量处理完成: success=%s, fail=%s", success_count, fail_count)
 
         self.process_btn.setEnabled(True)
         self.load_btn.setEnabled(True)
@@ -444,6 +512,7 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "错误", f"处理失败: {error_msg}")
         self.result_display.append(f"❌ 批量处理失败: {error_msg}")
         self.statusBar().showMessage("处理失败", 3000)
+        logger.error("批量处理错误信号: %s", error_msg)
 
         self.process_btn.setEnabled(True)
         self.load_btn.setEnabled(True)
@@ -455,10 +524,12 @@ class MainWindow(QMainWindow):
         self.result_display.clear()
         self.result_display.append("日志已清除")
         self.statusBar().showMessage("日志已清除", 2000)
+        logger.info("界面日志已清除")
 
     def closeEvent(self, event):
         """关闭事件 - 清理资源"""
         if self.worker and self.worker.isRunning():
+            logger.warning("应用关闭时仍有批量任务在运行")
             reply = QMessageBox.question(
                 self,
                 "确认退出",
@@ -468,20 +539,12 @@ class MainWindow(QMainWindow):
             if reply == QMessageBox.Yes:
                 self.worker.request_cancel()
                 self.worker.wait()
+                logger.info("用户确认退出，已等待工作线程结束")
                 event.accept()
             else:
+                logger.info("用户取消退出")
                 event.ignore()
             return
 
+        logger.info("应用窗口正常关闭")
         event.accept()
-
-
-def main():
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-    main()

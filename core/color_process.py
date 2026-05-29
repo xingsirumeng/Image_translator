@@ -1,14 +1,13 @@
+import logging
 import numpy as np
 
-
-
-import numpy as np
+logger = logging.getLogger(__name__)
 
 
 def detect_bg_and_text_color_kmeans(
     image,
     location,
-    k=3,
+    k=4,
     sample_size=6000,
     max_iter=30,
     n_init=3,
@@ -197,7 +196,7 @@ def get_text_background_color(image, location):
         return tuple(int(c) for c in median_color)
 
     except Exception as e:
-        print(f"背景颜色检测错误: {str(e)}")
+        logger.exception("背景颜色检测错误")
         return (255, 255, 255)  # 默认白色
 
 
@@ -270,7 +269,7 @@ def get_text_color(image, location, bg_color=None, color_threshold=100):
         return text_color
 
     except Exception as e:
-        print(f"文字颜色检测错误: {str(e)}")
+        logger.exception("文字颜色检测错误")
         return (0, 0, 0)  # 默认黑色
 
 
