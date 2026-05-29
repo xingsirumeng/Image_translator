@@ -225,7 +225,7 @@ def replace_text_in_image(img, output_path, paragraphs, translations):
                     draw.text((x, y), c, fill=text_color, font=font)
                     x += char_width
             else:
-                font, font_size = get_font(False, cnt)
+                font, font_size = get_font(False, len(para1['res']))
                 cnt, l = 1, 0
                 for c in text:
                     bbox = font.getbbox(c)
