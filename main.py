@@ -1,8 +1,8 @@
 import logging
 import sys
+from PySide6.QtCore import Qt
 from ui.application import QApplication, MainWindow
 from utils.logging_config import setup_logging
-
 
 logger = logging.getLogger(__name__)
 
@@ -10,6 +10,9 @@ logger = logging.getLogger(__name__)
 def main():
     log_file = setup_logging()
     logger.info("应用启动，日志文件: %s", log_file)
+    QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()

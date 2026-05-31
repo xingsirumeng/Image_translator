@@ -7,7 +7,7 @@ from core import color_process
 logger = logging.getLogger(__name__)
 
 
-def merge_text_lines(ocr_results, max_line_gap=0.5, max_x_diff=0.1):
+def merge_text_lines(ocr_results, max_line_gap=1, max_x_diff=0.1):
     # 基于位置信息合并属于同一句子的文本行
     # :param ocr_results: OCR识别结果列表
     # :param max_line_gap: 最大行间距（相对于行高的比例）
@@ -138,7 +138,7 @@ def load_font_path():
     raise FileNotFoundError("未找到任何中文字体文件，请安装中文字体或指定正确路径。")
 
 
-def replace_text_in_image(img, output_path, paragraphs, translations):
+def replace_text_in_image(img, output_path, paragraphs, translations, debug_output_path=None):
     # 在图片上替换文字
     img1 = img.copy()
     try:
@@ -155,7 +155,6 @@ def replace_text_in_image(img, output_path, paragraphs, translations):
             raise
 
         # 处理每个段落
-        cnt = 0
         for i, para1 in enumerate(paragraphs):
             para = para1['res']
             # 计算整个段落的边界
@@ -192,13 +191,14 @@ def replace_text_in_image(img, output_path, paragraphs, translations):
             text = translations[i]
 
             def get_font(horizontal: bool, count: float):
+                count = max(1, count)
                 if horizontal is True:
                     avg_size = height / count
-                    f_size = max(1, avg_size)
+                    f_size = max(1, int(avg_size))
                     return ImageFont.truetype(font_path, f_size), f_size
                 else:
                     avg_size = width / count
-                    f_size = max(1, avg_size)
+                    f_size = max(1, int(avg_size))
                     return ImageFont.truetype(font_path, f_size), f_size
 
             if para1['direction'] == "horizontal":
@@ -211,25 +211,27 @@ def replace_text_in_image(img, output_path, paragraphs, translations):
                         cnt += 1
                         l = 0
                     l += char_width
-                print(f'--------{len(para1['res'])}----------')
                 if cnt > len(para1['res']):
                     font, font_size = get_font(True, cnt)
                 x, y = left, top
                 line_height = font_size + 0.5
+                draw_text = ""
                 for c in text:
                     bbox = font.getbbox(c)
                     char_width = bbox[2] - bbox[0]
                     if x + char_width > right:
                         x = left
                         y += line_height
-                    draw.text((x, y), c, fill=text_color, font=font)
+                        draw_text += '\n'
+                    draw_text += c
                     x += char_width
+                draw.text((left, top), draw_text, fill=text_color, font=font)
             else:
                 font, font_size = get_font(False, len(para1['res']))
                 cnt, l = 1, 0
                 for c in text:
                     bbox = font.getbbox(c)
-                    char_height = bbox[3] - bbox[1]
+                    char_height = max(bbox[3] - bbox[1], bbox[2] - bbox[0])
                     if l + char_height > height:
                         cnt += 1
                         l = 0
@@ -240,7 +242,7 @@ def replace_text_in_image(img, output_path, paragraphs, translations):
                 line_height = font_size + 0.5
                 for c in text:
                     bbox = font.getbbox(c)
-                    char_height = bbox[3] - bbox[1]
+                    char_height = max(bbox[3] - bbox[1], bbox[2] - bbox[0])
                     if y + char_height > bottom:
                         y = top
                         x -= line_height
@@ -248,7 +250,8 @@ def replace_text_in_image(img, output_path, paragraphs, translations):
                     y += char_height
 
         # 保存结果
-        img1.save('./output/debug.png')
+        if debug_output_path:
+            img1.save(debug_output_path)
         img.save(output_path)
         logger.info("图片文字回写完成: %s", output_path)
         return True
