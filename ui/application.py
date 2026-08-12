@@ -19,6 +19,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QBrush, QColor, QGuiApplication, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -48,36 +49,44 @@ WM_HOTKEY = 0x0312
 MOD_ALT = 0x0001
 MOD_CONTROL = 0x0002
 MOD_SHIFT = 0x0004
+VK_Q = 0x51
 VK_T = 0x54
 VK_F8 = 0x77
+LAST_CAPTURE_RECT_SETTINGS_KEY = "last_capture_rect"
+QUICK_CAPTURE_HOTKEY_CANDIDATES = (
+    (11, MOD_CONTROL | MOD_SHIFT, VK_Q, "Ctrl+Shift+Q"),
+)
 
 
 class GlobalHotkeyManager(QObject, QAbstractNativeEventFilter):
     """Windows 全局热键管理。"""
 
     hotkey_triggered = Signal()
-    HOTKEY_CANDIDATES = (
+    DEFAULT_HOTKEY_CANDIDATES = (
         (1, MOD_CONTROL | MOD_ALT, VK_T, "Ctrl+Alt+T"),
         (2, MOD_CONTROL | MOD_SHIFT, VK_T, "Ctrl+Shift+T"),
         (3, MOD_ALT | MOD_SHIFT, VK_T, "Alt+Shift+T"),
         (4, MOD_CONTROL | MOD_ALT, VK_F8, "Ctrl+Alt+F8"),
     )
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, hotkey_candidates=None, manager_name="全局热键"):
         QObject.__init__(self, parent)
         QAbstractNativeEventFilter.__init__(self)
         self.parent = parent
         self._registered = False
         self._hotkey_id = None
         self._hotkey_label = None
+        self._hotkey_candidates = tuple(hotkey_candidates or self.DEFAULT_HOTKEY_CANDIDATES)
+        self._manager_name = manager_name
         self._user32 = None
 
         if sys.platform == "win32":
             self._user32 = ctypes.WinDLL("user32", use_last_error=True)
 
-    @classmethod
-    def default_hotkey_label(cls):
-        return cls.HOTKEY_CANDIDATES[0][3]
+    def default_hotkey_label(self):
+        if not self._hotkey_candidates:
+            return None
+        return self._hotkey_candidates[0][3]
 
     @property
     def hotkey_label(self):
@@ -98,20 +107,25 @@ class GlobalHotkeyManager(QObject, QAbstractNativeEventFilter):
         if app is None:
             raise RuntimeError("QGuiApplication 尚未初始化，无法注册全局热键")
 
-        for hotkey_id, modifiers, virtual_key, label in self.HOTKEY_CANDIDATES:
+        for hotkey_id, modifiers, virtual_key, label in self._hotkey_candidates:
             ctypes.set_last_error(0)
             if self._user32.RegisterHotKey(None, hotkey_id, modifiers, virtual_key):
                 app.installNativeEventFilter(self)
                 self._registered = True
                 self._hotkey_id = hotkey_id
                 self._hotkey_label = label
-                logger.info("全局热键已注册: %s", label)
+                logger.info("%s已注册: %s", self._manager_name, label)
                 return label
 
             error_code = ctypes.get_last_error()
-            logger.warning("全局热键注册失败: %s (%s)", label, self._describe_register_error(error_code))
+            logger.warning(
+                "%s注册失败: %s (%s)",
+                self._manager_name,
+                label,
+                self._describe_register_error(error_code),
+            )
 
-        logger.error("所有候选全局热键均注册失败")
+        logger.error("%s所有候选全局热键均注册失败", self._manager_name)
         return None
 
     def unregister(self):
@@ -125,7 +139,7 @@ class GlobalHotkeyManager(QObject, QAbstractNativeEventFilter):
         finally:
             self._user32.UnregisterHotKey(None, self._hotkey_id)
             self._registered = False
-            logger.info("全局热键已注销: %s", self._hotkey_label)
+            logger.info("%s已注销: %s", self._manager_name, self._hotkey_label)
             self._hotkey_id = None
             self._hotkey_label = None
 
@@ -517,6 +531,8 @@ class SettingsDialog(QDialog):
         self.translate_language_input = QLineEdit()
         self.translate_language_input.setPlaceholderText("例如：中文、English、JA")
 
+        self.enable_lama_checkbox = QCheckBox("启用 LAMA 背景填充（需 GPU 和 litelama 库）")
+
         self.baidu_api_key_input = QLineEdit()
         self.baidu_secret_key_input = QLineEdit()
         self.baidu_secret_key_input.setEchoMode(QLineEdit.Password)
@@ -531,6 +547,7 @@ class SettingsDialog(QDialog):
         form_layout.addRow("OCR 提供方:", self.ocr_provider_combo)
         form_layout.addRow("翻译提供方:", self.translation_provider_combo)
         form_layout.addRow("目标语言:", self.translate_language_input)
+        form_layout.addRow("", self.enable_lama_checkbox)
 
         self.baidu_group = QWidget()
         baidu_layout = QFormLayout(self.baidu_group)
@@ -619,6 +636,7 @@ class SettingsDialog(QDialog):
             "deepseek_api_key": self.deepseek_api_key_input.text().strip(),
             "deeplx_endpoint": self.deeplx_endpoint_input.text().strip(),
             "translate_language": self.translate_language_input.text().strip() or "中文",
+            "enable_lama": self.enable_lama_checkbox.isChecked(),
         }
 
     def _load_values(self):
@@ -635,6 +653,9 @@ class SettingsDialog(QDialog):
         self.baidu_translate_appkey_input.setText(config.get("baidu_translate_appkey", ""))
         self.deepseek_api_key_input.setText(config.get("deepseek_api_key", ""))
         self.deeplx_endpoint_input.setText(config.get("deeplx_endpoint", ""))
+        self.enable_lama_checkbox.setChecked(
+            config.get("enable_lama") in (True, "true", "True", "1")
+        )
 
     def _set_combo_value(self, combo_box, value):
         index = combo_box.findData(value)
@@ -687,11 +708,20 @@ class MainWindow(QMainWindow):
         self._pending_capture_rect = None
         self._capture_result_rect = None
         self._capture_metadata = None
-        self.hotkey_manager = GlobalHotkeyManager(self)
+        self.capture_hotkey_manager = GlobalHotkeyManager(
+            self,
+            hotkey_candidates=GlobalHotkeyManager.DEFAULT_HOTKEY_CANDIDATES,
+            manager_name="框选截图热键",
+        )
+        self.quick_capture_hotkey_manager = GlobalHotkeyManager(
+            self,
+            hotkey_candidates=QUICK_CAPTURE_HOTKEY_CANDIDATES,
+            manager_name="一键截图热键",
+        )
 
         self.init_ui()
         self.update_current_display()
-        self._init_hotkey()
+        self._init_hotkeys()
         logger.info("主窗口初始化完成")
 
     def init_ui(self):
@@ -706,7 +736,8 @@ class MainWindow(QMainWindow):
 
         button_layout = QHBoxLayout()
         self.load_btn = QPushButton("📁 加载图片")
-        self.capture_btn = QPushButton("🖼️ 截图翻译")
+        self.capture_btn = QPushButton("🖼️ 框选截图")
+        self.quick_capture_btn = QPushButton("⚡ 一键截图")
         self.process_btn = QPushButton("🚀 批量处理")
         self.settings_btn = QPushButton("⚙️ 打开设置")
         self.clear_btn = QPushButton("🗑️ 清除日志")
@@ -714,12 +745,14 @@ class MainWindow(QMainWindow):
         self.process_btn.setEnabled(False)
         self.settings_btn.clicked.connect(self.open_settings)
         self.capture_btn.clicked.connect(self.start_screenshot_translation)
+        self.quick_capture_btn.clicked.connect(self.start_quick_screenshot_translation)
         self.load_btn.clicked.connect(self.load_images)
         self.process_btn.clicked.connect(self.process_images)
         self.clear_btn.clicked.connect(self.clear_log)
 
         button_layout.addWidget(self.load_btn)
         button_layout.addWidget(self.capture_btn)
+        button_layout.addWidget(self.quick_capture_btn)
         button_layout.addWidget(self.process_btn)
         button_layout.addWidget(self.settings_btn)
         button_layout.addWidget(self.clear_btn)
@@ -741,31 +774,221 @@ class MainWindow(QMainWindow):
 
         self.statusBar().showMessage("就绪")
 
-    def _init_hotkey(self):
+    def _init_hotkeys(self):
         """初始化全局热键。"""
         if sys.platform != "win32":
             logger.info("当前平台不是 Windows，跳过全局热键注册")
             return
 
-        self.hotkey_manager.hotkey_triggered.connect(self._handle_hotkey_triggered)
-        registered_label = self.hotkey_manager.register()
+        self.capture_hotkey_manager.hotkey_triggered.connect(self._handle_capture_hotkey_triggered)
+        registered_label = self.capture_hotkey_manager.register()
         if registered_label:
-            if registered_label == self.hotkey_manager.default_hotkey_label():
-                self.result_display.append(f"⌨️ 已启用全局热键: {registered_label}")
+            if registered_label == self.capture_hotkey_manager.default_hotkey_label():
+                self.result_display.append(f"⌨️ 已启用框选截图热键: {registered_label}")
             else:
                 self.result_display.append(
-                    f"⌨️ 默认热键 {self.hotkey_manager.default_hotkey_label()} 被占用，已回退到: {registered_label}"
+                    f"⌨️ 框选截图默认热键 {self.capture_hotkey_manager.default_hotkey_label()} 被占用，已回退到: {registered_label}"
                 )
         else:
-            self.result_display.append("⚠️ 所有候选全局热键都注册失败，仍可通过按钮使用截图翻译")
+            self.result_display.append("⚠️ 框选截图全局热键注册失败，仍可通过按钮使用")
 
-    def _handle_hotkey_triggered(self):
-        """响应全局热键。"""
-        if self.isHidden() and self.preview_window is not None and self.preview_window.isVisible():
-            logger.info("覆盖窗口显示中，忽略新的截图热键")
+        self.quick_capture_hotkey_manager.hotkey_triggered.connect(self._handle_quick_capture_hotkey_triggered)
+        quick_capture_label = self.quick_capture_hotkey_manager.register()
+        if quick_capture_label:
+            self.result_display.append(f"⚡ 已启用一键截图热键: {quick_capture_label}")
+        else:
+            self.result_display.append("⚠️ 一键截图热键 Ctrl+Shift+Q 注册失败，仍可通过按钮使用")
+
+    def _is_preview_overlay_showing(self):
+        return self.isHidden() and self.preview_window is not None and self.preview_window.isVisible()
+
+    def _is_selection_overlay_showing(self):
+        return self.selection_overlay is not None and self.selection_overlay.isVisible()
+
+    def _handle_capture_hotkey_triggered(self):
+        """响应框选截图热键。"""
+        if self._is_selection_overlay_showing():
+            logger.info("截图选区层显示中，忽略新的框选截图热键")
             return
-        logger.info("收到全局热键，准备进入截图翻译")
+        if self._is_preview_overlay_showing():
+            logger.info("覆盖窗口显示中，忽略新的框选截图热键")
+            return
+        logger.info("收到框选截图热键，准备进入截图翻译")
         self.start_screenshot_translation()
+
+    def _handle_quick_capture_hotkey_triggered(self):
+        """响应一键截图热键。"""
+        if self._is_selection_overlay_showing():
+            logger.info("截图选区层显示中，忽略新的一键截图热键")
+            return
+        if self._is_preview_overlay_showing():
+            logger.info("覆盖窗口显示中，忽略新的一键截图热键")
+            return
+        logger.info("收到一键截图热键，准备直接截图翻译")
+        self.start_quick_screenshot_translation()
+
+    def _virtual_desktop_rect(self):
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            raise RuntimeError("未找到可用屏幕")
+
+        if hasattr(screen, "virtualGeometry"):
+            return QRect(screen.virtualGeometry())
+
+        geometry = QRect(screen.geometry())
+        for item in QGuiApplication.screens()[1:]:
+            geometry = geometry.united(item.geometry())
+        return geometry
+
+    def _default_capture_rect(self):
+        screens = QGuiApplication.screens()
+        if not screens:
+            raise RuntimeError("未找到可用屏幕")
+
+        if len(screens) == 1:
+            return QRect(self._virtual_desktop_rect()), "默认全屏区域"
+        return QRect(QGuiApplication.primaryScreen().geometry()), "默认主屏全屏区域"
+
+    def _serialize_capture_rect(self, rect):
+        normalized = QRect(rect).normalized()
+        return f"{normalized.x()},{normalized.y()},{normalized.width()},{normalized.height()}"
+
+    def _deserialize_capture_rect(self, value):
+        if isinstance(value, QRect):
+            rect = QRect(value)
+        elif isinstance(value, str):
+            parts = [part.strip() for part in value.split(",")]
+            if len(parts) != 4:
+                return None
+            try:
+                rect = QRect(*(int(part) for part in parts))
+            except ValueError:
+                return None
+        elif isinstance(value, (list, tuple)) and len(value) == 4:
+            try:
+                rect = QRect(*(int(part) for part in value))
+            except (TypeError, ValueError):
+                return None
+        else:
+            return None
+
+        return rect.normalized()
+
+    def _sanitize_capture_rect(self, rect):
+        normalized = QRect(rect).normalized()
+        desktop_rect = self._virtual_desktop_rect()
+        sanitized = normalized.intersected(desktop_rect)
+        if sanitized.width() < 5 or sanitized.height() < 5:
+            return None
+        return sanitized
+
+    def _intersecting_screens(self, rect):
+        normalized = QRect(rect).normalized()
+        return [
+            screen
+            for screen in QGuiApplication.screens()
+            if normalized.intersects(screen.geometry())
+        ]
+
+    def _is_capturable_rect(self, rect):
+        sanitized = self._sanitize_capture_rect(rect)
+        if sanitized is None:
+            return False
+        return len(self._intersecting_screens(sanitized)) <= 1
+
+    def _load_last_capture_rect(self):
+        stored = self.settings.value(LAST_CAPTURE_RECT_SETTINGS_KEY, "")
+        rect = self._deserialize_capture_rect(stored)
+        if rect is None:
+            return None
+        return self._sanitize_capture_rect(rect)
+
+    def _remember_capture_rect(self, rect):
+        normalized = self._sanitize_capture_rect(rect)
+        if normalized is None:
+            return
+        self.settings.setValue(
+            LAST_CAPTURE_RECT_SETTINGS_KEY,
+            self._serialize_capture_rect(normalized),
+        )
+        logger.info("已更新最近截图区域: %s", normalized)
+
+    def _resolve_quick_capture_rect(self):
+        last_rect = self._load_last_capture_rect()
+        if last_rect is not None and self._is_capturable_rect(last_rect):
+            return last_rect, "上次截图区域", None
+
+        default_rect, label = self._default_capture_rect()
+        fallback_message = None
+        if last_rect is not None:
+            fallback_message = "上次截图区域已失效，已回退到默认区域。"
+        elif len(QGuiApplication.screens()) > 1:
+            fallback_message = "检测到多显示器，默认一键截图区域使用主屏全屏。"
+        return default_rect, label, fallback_message
+
+    def _format_capture_rect(self, rect):
+        return f"x={rect.x()}, y={rect.y()}, w={rect.width()}, h={rect.height()}"
+
+    def _restore_main_window(self):
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _prepare_capture_translation(self):
+        if self._is_selection_overlay_showing():
+            logger.info("截图选区层仍在显示，忽略新的截图请求")
+            return False
+        if self.worker and self.worker.isRunning():
+            QMessageBox.warning(self, "提示", "批量处理正在进行中，请先等待完成。")
+            return False
+        if self.capture_worker and self.capture_worker.isRunning():
+            QMessageBox.warning(self, "提示", "截图翻译正在进行中，请稍后。")
+            return False
+        if not self.ensure_runtime_config_ready():
+            return False
+
+        self._set_controls_enabled(False)
+        if self.preview_window is not None:
+            self.preview_window.close()
+            self.preview_window = None
+        self._capture_result_rect = None
+        self._capture_metadata = None
+        self._pending_capture_rect = None
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, translate_api.IMAGE_STAGE_COUNT)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("%p%")
+        return True
+
+    def _capture_rect_and_translate(self, rect, image_name="截图"):
+        self._pending_capture_rect = QRect(rect).normalized()
+
+        def do_capture():
+            try:
+                capture_rect = QRect(self._pending_capture_rect)
+                image, capture_info = capture_rect_with_screen_info(capture_rect)
+                self._capture_metadata = capture_info
+                self._remember_capture_rect(capture_rect)
+                logger.info("截图捕获完成: %s", capture_info)
+            except Exception as exc:
+                logger.exception("截图捕获失败")
+                self.progress_bar.setVisible(False)
+                self._set_controls_enabled(True)
+                self._restore_main_window()
+                QMessageBox.critical(self, "错误", f"截图失败: {exc}")
+                self.result_display.append(f"❌ 截图失败: {exc}")
+                self.statusBar().showMessage("截图失败", 3000)
+                self._pending_capture_rect = None
+                self._capture_metadata = None
+                self.selection_overlay = None
+                return
+
+            self._capture_result_rect = capture_rect
+            self._start_capture_worker(image, capture_rect, image_name=image_name)
+            self._pending_capture_rect = None
+            self.selection_overlay = None
+
+        QTimer.singleShot(80, do_capture)
 
     def update_current_display(self):
         """更新当前设置显示"""
@@ -827,6 +1050,7 @@ class MainWindow(QMainWindow):
     def _set_controls_enabled(self, enabled):
         self.load_btn.setEnabled(enabled)
         self.capture_btn.setEnabled(enabled)
+        self.quick_capture_btn.setEnabled(enabled)
         self.process_btn.setEnabled(enabled and bool(self.image_paths))
         self.settings_btn.setEnabled(enabled)
         self.clear_btn.setEnabled(enabled)
@@ -852,26 +1076,9 @@ class MainWindow(QMainWindow):
 
     def start_screenshot_translation(self):
         """进入截图翻译模式。"""
-        if self.worker and self.worker.isRunning():
-            QMessageBox.warning(self, "提示", "批量处理正在进行中，请先等待完成。")
-            return
-        if self.capture_worker and self.capture_worker.isRunning():
-            QMessageBox.warning(self, "提示", "截图翻译正在进行中，请稍后。")
-            return
-        if not self.ensure_runtime_config_ready():
+        if not self._prepare_capture_translation():
             return
 
-        self._set_controls_enabled(False)
-        if self.preview_window is not None:
-            self.preview_window.close()
-            self.preview_window = None
-        self._capture_result_rect = None
-        self._capture_metadata = None
-        self._pending_capture_rect = None
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, translate_api.IMAGE_STAGE_COUNT)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setFormat("%p%")
         self.result_display.append("🖼️ 进入截图翻译模式，拖拽选择区域，右键或 Esc 取消")
         self.statusBar().showMessage("请选择截图区域")
         logger.info("进入截图翻译模式")
@@ -894,6 +1101,24 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("截图翻译已取消", 2000)
         self.result_display.append("ℹ️ 截图翻译已取消")
 
+    def start_quick_screenshot_translation(self):
+        """直接翻译最近一次截图区域。"""
+        if not self._prepare_capture_translation():
+            return
+
+        capture_rect, rect_label, fallback_message = self._resolve_quick_capture_rect()
+        if fallback_message:
+            self.result_display.append(f"ℹ️ {fallback_message}")
+
+        self.result_display.append(
+            f"⚡ 使用{rect_label}直接截图翻译: {self._format_capture_rect(capture_rect)}"
+        )
+        self.statusBar().showMessage("正在按记忆区域截图")
+        logger.info("进入一键截图翻译模式: %s %s", rect_label, capture_rect)
+
+        self.hide()
+        self._capture_rect_and_translate(capture_rect, image_name="一键截图")
+
     def on_capture_region_selected(self, rect):
         """记录截图选区并延迟抓取，避免把遮罩层截进去。"""
         self._pending_capture_rect = QRect(rect)
@@ -901,45 +1126,22 @@ class MainWindow(QMainWindow):
             f"📌 已选择区域: x={rect.x()}, y={rect.y()}, w={rect.width()}, h={rect.height()}"
         )
         logger.info("截图区域已选择: %s", rect)
+        self._capture_rect_and_translate(rect)
 
-        def do_capture():
-            try:
-                capture_rect = QRect(self._pending_capture_rect)
-                image, capture_info = capture_rect_with_screen_info(capture_rect)
-                self._capture_metadata = capture_info
-                logger.info("截图捕获完成: %s", capture_info)
-            except Exception as exc:
-                logger.exception("截图捕获失败")
-                self.progress_bar.setVisible(False)
-                self._set_controls_enabled(True)
-                self.show()
-                self.raise_()
-                self.activateWindow()
-                QMessageBox.critical(self, "错误", f"截图失败: {exc}")
-                self.result_display.append(f"❌ 截图失败: {exc}")
-                self.statusBar().showMessage("截图失败", 3000)
-                self._pending_capture_rect = None
-                self._capture_metadata = None
-                self.selection_overlay = None
-                return
-
-            self._capture_result_rect = capture_rect
-            self._start_capture_worker(image, capture_rect)
-            self._pending_capture_rect = None
-            self.selection_overlay = None
-
-        QTimer.singleShot(80, do_capture)
-
-    def _start_capture_worker(self, image, rect):
+    def _start_capture_worker(self, image, rect, image_name="截图"):
         """启动截图翻译线程。"""
-        self.capture_worker = ScreenshotTranslationWorker(image, self.config_manager, image_name="截图")
+        self.capture_worker = ScreenshotTranslationWorker(
+            image,
+            self.config_manager,
+            image_name=image_name,
+        )
         self.capture_worker.overall_progress.connect(self.on_overall_progress)
         self.capture_worker.finished.connect(self.on_capture_finished)
         self.capture_worker.error.connect(self.on_capture_error)
         self.result_display.append("⏳ 正在识别并翻译截图...")
         self.statusBar().showMessage("处理中...")
         self.capture_worker.start()
-        logger.info("截图翻译线程已启动: rect=%s", rect)
+        logger.info("截图翻译线程已启动: name=%s rect=%s", image_name, rect)
 
     def on_capture_finished(self, result):
         """截图翻译完成。"""
@@ -948,9 +1150,7 @@ class MainWindow(QMainWindow):
 
         if not result.get("success"):
             self._set_controls_enabled(True)
-            self.show()
-            self.raise_()
-            self.activateWindow()
+            self._restore_main_window()
             self.result_display.append(f"❌ 截图翻译失败: {result.get('error', '未知错误')}")
             QMessageBox.critical(self, "错误", f"截图翻译失败: {result.get('error', '未知错误')}")
             self.statusBar().showMessage("截图翻译失败", 3000)
@@ -964,9 +1164,7 @@ class MainWindow(QMainWindow):
             logger.exception("构建覆盖层图片失败")
             self.result_display.append("❌ 结果图片加载失败")
             self._set_controls_enabled(True)
-            self.show()
-            self.raise_()
-            self.activateWindow()
+            self._restore_main_window()
             QMessageBox.warning(self, "警告", "结果图片加载失败")
             return
 
@@ -994,9 +1192,7 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         self.capture_worker = None
         self._set_controls_enabled(True)
-        self.show()
-        self.raise_()
-        self.activateWindow()
+        self._restore_main_window()
         QMessageBox.critical(self, "错误", f"截图翻译失败: {error_msg}")
         self.result_display.append(f"❌ 截图翻译失败: {error_msg}")
         self.statusBar().showMessage("截图翻译失败", 3000)
@@ -1021,9 +1217,7 @@ class MainWindow(QMainWindow):
             self.preview_window = None
         self._capture_result_rect = None
         self._capture_metadata = None
-        self.show()
-        self.raise_()
-        self.activateWindow()
+        self._restore_main_window()
         self.statusBar().showMessage("已关闭截图覆盖层", 2000)
         self.result_display.append("ℹ️ 已关闭截图覆盖层")
 
@@ -1276,6 +1470,7 @@ class MainWindow(QMainWindow):
                 event.ignore()
             return
 
-        self.hotkey_manager.unregister()
+        self.capture_hotkey_manager.unregister()
+        self.quick_capture_hotkey_manager.unregister()
         logger.info("应用窗口正常关闭")
         event.accept()

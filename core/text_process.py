@@ -7,7 +7,7 @@ from core import color_process
 logger = logging.getLogger(__name__)
 
 
-def merge_text_lines(ocr_results, max_line_gap=1, max_x_diff=0.1):
+def merge_text_lines(ocr_results, max_line_gap=0.9, max_x_diff=0.1):
     # 基于位置信息合并属于同一句子的文本行
     # :param ocr_results: OCR识别结果列表
     # :param max_line_gap: 最大行间距（相对于行高的比例）
@@ -138,14 +138,30 @@ def load_font_path():
     raise FileNotFoundError("未找到任何中文字体文件，请安装中文字体或指定正确路径。")
 
 
-def replace_text_in_image(img, output_path, paragraphs, translations, debug_output_path=None):
-    # 在图片上替换文字
-    img1 = img.copy()
+def replace_text_in_image(img, output_path, paragraphs, translations,
+                          debug_output_path=None, skip_background_fill=False,
+                          original_image=None):
+    """在图片上替换文字。
+
+    Args:
+        img: PIL Image (RGB) — 待处理的图片（可能已被 LAMA 等工具预处理过）
+        output_path: str — 输出图片路径
+        paragraphs: list — 段落列表
+        translations: list — 翻译后的文本列表
+        debug_output_path: str | None — 调试输出路径
+        skip_background_fill: bool — 若为 True，跳过纯色背景填充（当外部已用 LAMA
+                               等工具预先清理背景时使用）
+        original_image: PIL Image | None — 原始图片，用于颜色检测。
+                        当 skip_background_fill=True 时应传入，确保颜色基于原图。
+    """
+    # 用于颜色检测的图像：优先使用原图
+    color_ref_img = original_image if original_image is not None else img
+    # img1 = img.copy()
     try:
         logger.info("开始回写图片文字: output=%s, paragraphs=%s", output_path, len(paragraphs))
         # 打开原始图片
         draw = ImageDraw.Draw(img)
-        draw1 = ImageDraw.Draw(img1)
+        # draw1 = ImageDraw.Draw(img1)
         # 尝试加载中文字体，如果失败则使用默认字体
         try:
             # 尝试常见中文字体路径
@@ -172,26 +188,22 @@ def replace_text_in_image(img, output_path, paragraphs, translations, debug_outp
                 'width': width,
                 'height': height
             }
-            draw1.rectangle((left, top, left + width, top + height), outline='red', width=3)
+            # draw1.rectangle((left, top, left + width, top + height), outline='red', width=3)
 
-            # 检测文字区域的背景颜色
-            bg_color = color_process.get_text_background_color(img, merged_location)
-            # bg_color = "white"
-            # 检测文字颜色（使用第一个文字块的颜色作为参考）
-            text_color = color_process.get_text_color(img, para[0]['location'], bg_color)
-            # text_color = "black"
-            bg_color, text_color = color_process.detect_bg_and_text_color_kmeans(img, merged_location)
+            # 检测背景颜色和文字颜色（基于原图，确保颜色识别准确）
+            bg_color, text_color = color_process.detect_bg_and_text_color_kmeans(color_ref_img, merged_location)
 
-            # 绘制背景覆盖原始文本
-            draw.rectangle(
-                [(left, top), (right, bottom)],
-                fill=bg_color
-            )
+            if not skip_background_fill:
+                # 绘制纯色背景覆盖原始文本
+                draw.rectangle(
+                    [(left, top), (right, bottom)],
+                    fill=bg_color
+                )
             # 绘制翻译后的文本
             text = translations[i]
 
             def get_font(horizontal: bool, count: float):
-                count = max(1, count)
+                count = max(1.0, count)
                 if horizontal is True:
                     avg_size = height / count
                     f_size = max(1, int(avg_size))
